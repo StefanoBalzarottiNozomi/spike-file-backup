@@ -118,6 +118,7 @@ func TestJunctionRaceAttackFailSequential(t *testing.T) {
 	//_, _ = f.WriteString(fmt.Sprintf("%d", increment))
 	//_ = f.Close()
 
+	// ASSERTION THREAD
 	_, statErr := os.Lstat(fileInMaliciousPath)
 	assert.False(t, statErr == nil)
 
@@ -162,6 +163,7 @@ func TestJunctionRaceAttackSequential(t *testing.T) {
 	_, _ = f.WriteString(fmt.Sprintf("%d", increment))
 	_ = f.Close()
 
+	// ASSERTION THREAD
 	_, statErr := os.Lstat(fileInMaliciousPath)
 	assert.True(t, statErr == nil)
 
@@ -206,6 +208,7 @@ func TestJunctionRaceAttack(t *testing.T) {
 			case <-ctx.Done():
 				return
 			default:
+				increment++
 				// THREAD 1 - #1 removes 'vulnerable folder'
 				_ = os.RemoveAll(vulnerableFolder)
 				// THREAD 1 - #2 creates 'vulnerable folder'
@@ -238,9 +241,13 @@ func TestJunctionRaceAttack(t *testing.T) {
 	}()
 
 	before := time.Now()
+	// ASSERTION THREAD
 	assert.Eventually(t, func() bool {
 		_, statErr := os.Lstat(fileInMaliciousPath)
-		return statErr == nil
+		if statErr == nil { // breakpoint
+			return true
+		}
+		return false
 	},
 		time.Minute*1,
 		time.Millisecond*100, // way too slow to be meaningful
