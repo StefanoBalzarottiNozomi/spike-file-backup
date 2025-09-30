@@ -95,6 +95,94 @@ func TestCreateFile(t *testing.T) {
 	assert.NotNil(t, hardlinkIoResult)
 }
 
+func TestJunctionRaceAttackFailSequential(t *testing.T) {
+	rootFolder := t.TempDir()
+	const fileName = "file.txt"
+	maliciousFolder := filepath.Join(rootFolder, "malicious_folder")
+	vulnerableFolder := filepath.Join(rootFolder, "vulnerable_folder")
+	fileInCorrectPath := filepath.Join(vulnerableFolder, fileName)
+	fileInMaliciousPath := filepath.Join(maliciousFolder, fileName)
+
+	assert.NoError(t, os.Mkdir(maliciousFolder, os.ModePerm))
+
+	increment := 0
+
+	// THREAD 2 - #3
+	// 1. creates 'malicious folder'
+	// 2. then creates junction 'vulnerable folder' -> 'malicious folder'
+	_ = junction.Create(maliciousFolder, vulnerableFolder)
+
+	// THREAD 1 - #3 creates .../'vulnerable folder'/file.txt
+	//f, _ := os.Create(fileInCorrectPath) // <<<<<<<<<<<<<<<<<<<<<<<<<<<< ATTACK >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+	_, _, _ = CreateFile(fileInCorrectPath) // <<<<<<<<<<<<<<<<<<<<<<<<<<<< "PROTECTION" >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+	//_, _ = f.WriteString(fmt.Sprintf("%d", increment))
+	//_ = f.Close()
+
+	_, statErr := os.Lstat(fileInMaliciousPath)
+	assert.False(t, statErr == nil)
+
+	// THREAD 1 - #1 removes 'vulnerable folder'
+	_ = os.RemoveAll(vulnerableFolder)
+	// THREAD 1 - #2 creates 'vulnerable folder'
+	_ = os.Mkdir(vulnerableFolder, os.ModePerm)
+
+	// THREAD 2 - #1 removes 'vulnerable folder'
+	_ = os.RemoveAll(vulnerableFolder)
+	// THREAD 2 - #2 creates 'vulnerable folder'
+	_ = os.Mkdir(vulnerableFolder, os.ModePerm)
+
+	// LOOP
+
+	// THREAD 1 - #3 creates .../'vulnerable folder'/file.txt
+	f2, _ := os.Create(fileInCorrectPath)
+	_, _ = f2.WriteString(fmt.Sprintf("%d", increment))
+	_ = f2.Close()
+}
+
+func TestJunctionRaceAttackSequential(t *testing.T) {
+	rootFolder := t.TempDir()
+	const fileName = "file.txt"
+	maliciousFolder := filepath.Join(rootFolder, "malicious_folder")
+	vulnerableFolder := filepath.Join(rootFolder, "vulnerable_folder")
+	fileInCorrectPath := filepath.Join(vulnerableFolder, fileName)
+	fileInMaliciousPath := filepath.Join(maliciousFolder, fileName)
+
+	assert.NoError(t, os.Mkdir(maliciousFolder, os.ModePerm))
+
+	increment := 0
+
+	// THREAD 2 - #3
+	// 1. creates 'malicious folder'
+	// 2. then creates junction 'vulnerable folder' -> 'malicious folder'
+	_ = junction.Create(maliciousFolder, vulnerableFolder)
+
+	// THREAD 1 - #3 creates .../'vulnerable folder'/file.txt
+	f, _ := os.Create(fileInCorrectPath) // <<<<<<<<<<<<<<<<<<<<<<<<<<<< ATTACK >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+	// _, _, _ = CreateFile(fileInCorrectPath) // <<<<<<<<<<<<<<<<<<<<<<<<<<<< "PROTECTION" >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+	_, _ = f.WriteString(fmt.Sprintf("%d", increment))
+	_ = f.Close()
+
+	_, statErr := os.Lstat(fileInMaliciousPath)
+	assert.True(t, statErr == nil)
+
+	// THREAD 1 - #1 removes 'vulnerable folder'
+	_ = os.RemoveAll(vulnerableFolder)
+	// THREAD 1 - #2 creates 'vulnerable folder'
+	_ = os.Mkdir(vulnerableFolder, os.ModePerm)
+
+	// THREAD 2 - #1 removes 'vulnerable folder'
+	_ = os.RemoveAll(vulnerableFolder)
+	// THREAD 2 - #2 creates 'vulnerable folder'
+	_ = os.Mkdir(vulnerableFolder, os.ModePerm)
+
+	// LOOP
+
+	// THREAD 1 - #3 creates .../'vulnerable folder'/file.txt
+	f2, _ := os.Create(fileInCorrectPath)
+	_, _ = f2.WriteString(fmt.Sprintf("%d", increment))
+	_ = f2.Close()
+}
+
 func TestJunctionRaceAttack(t *testing.T) {
 	rootFolder := t.TempDir()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -106,6 +194,8 @@ func TestJunctionRaceAttack(t *testing.T) {
 
 	assert.NoError(t, os.Mkdir(maliciousFolder, os.ModePerm))
 
+	increment := 0
+
 	wg := sync.WaitGroup{}
 	defer wg.Wait()
 	wg.Add(2)
@@ -116,13 +206,18 @@ func TestJunctionRaceAttack(t *testing.T) {
 			case <-ctx.Done():
 				return
 			default:
+				// THREAD 1 - #1 removes 'vulnerable folder'
 				_ = os.RemoveAll(vulnerableFolder)
+				// THREAD 1 - #2 creates 'vulnerable folder'
 				_ = os.Mkdir(vulnerableFolder, os.ModePerm)
+				// THREAD 1 - #3 creates .../'vulnerable folder'/file.txt
 				f, _ := os.Create(fileInCorrectPath)
+				_, _ = f.WriteString(fmt.Sprintf("%d", increment))
 				_ = f.Close()
 			}
 		}
 	}()
+
 	go func() {
 		defer wg.Done()
 		for {
@@ -130,17 +225,26 @@ func TestJunctionRaceAttack(t *testing.T) {
 			case <-ctx.Done():
 				return
 			default:
+				// THREAD 2 - #1 removes 'vulnerable folder'
 				_ = os.RemoveAll(vulnerableFolder)
+				// THREAD 2 - #2 creates 'vulnerable folder'
 				_ = os.Mkdir(vulnerableFolder, os.ModePerm)
+				// THREAD 2 - #3
+				// 1. creates 'malicious folder'
+				// 2. then creates junction 'vulnerable folder' -> 'malicious folder'
 				_ = junction.Create(maliciousFolder, vulnerableFolder)
 			}
 		}
 	}()
+
 	before := time.Now()
 	assert.Eventually(t, func() bool {
 		_, statErr := os.Lstat(fileInMaliciousPath)
 		return statErr == nil
-	}, time.Minute*1, time.Millisecond*100)
+	},
+		time.Minute*1,
+		time.Millisecond*100, // way too slow to be meaningful
+	)
 
 	fmt.Printf("Malicious file detected after %d s", time.Since(before)/time.Second)
 	cancel()
